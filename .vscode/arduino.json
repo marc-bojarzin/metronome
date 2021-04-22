@@ -1,0 +1,7 @@
+{
+    "sketch": "metronome.ino",
+    "board": "arduino:avr:nano",
+    "port": "/dev/ttyUSB0",
+    "configuration": "cpu=atmega328old",
+    "output": "../.vscode-build/metronome"
+}
