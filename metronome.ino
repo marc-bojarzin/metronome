@@ -19,9 +19,6 @@ static const uint8_t ENCODER_CLK_PIN =  2;  // INT0
 static const uint8_t ENCODER_DT_PIN  =  4;
 static const uint8_t ENCODER_BTN_PIN =  5;
 
-// Select button.
-static const uint8_t SELECT_BTN_PIN  =  6;
-
 // LEDs
 static const uint8_t RED_LED_PIN     =  7;
 static const uint8_t GREEN_LED_PIN   =  8;
@@ -29,21 +26,13 @@ static const uint8_t GREEN_LED_PIN   =  8;
 // Speaker
 static const uint8_t SPEAKER_PIN     =  9;
 
-// Standby
-static const uint32_t STANDBY = (15ul * 1000ul * 1000ul);  // 15 seconds
-
-// Clear display line
-static const char* BLANK_LINE = "                ";
-
 //-------------------------------------------------------------------------------------------------
 // Global objects
-
-uint32_t inactive_since__ = micros();
 
 // Display:
 // Connect to LCD via I2C, default address 0x27 (A0-A2 not jumpered).
 LiquidCrystal_I2C lcd (0x27, 16, 2);
-DeJitter dsply (&lcd);
+DeJitter dejitter (&lcd);
 
 // LED that flashes on every beat.
 Led led_red(RED_LED_PIN);
@@ -57,20 +46,19 @@ Led led_green(GREEN_LED_PIN);
 Button encoder_btn (ENCODER_BTN_PIN);
 volatile int encoder_moved__ = 0;
 
-// Select button.
-Button select_btn (SELECT_BTN_PIN);
+// Statemachine to react on user input.
 Statemachine fsm = Statemachine();
 
-enum {
-    mode_standby = 0
-  , mode_tempo
-  , mode_metre
-  , mode_volume
+enum class edit_mode {
+    standby = 0
+  , tempo
+  , metre
+  , volume
 }   edit_mode__;
 
 
 // The last time measured
-unsigned long tick__ = 0;
+uint32_t tick__ = 0;
 
 // Beats per minute.
 unsigned bpm__ = 104;
@@ -80,7 +68,7 @@ int metre__ = 1;
 int beat__  = 1;
 
 // Duration of one beat in us.
-uint32_t cycle__ = ((60 * 1000000) / bpm__);
+uint32_t cycle__ = 0;
 
 // Elapsed time during cylce.
 uint32_t elapsed__ = 0;
@@ -168,8 +156,6 @@ void advance_tempo(int steps)
         {
             bpm__ = (bpm__ / 5) * 5;
             bpm__ += (steps * 5);
-            bpm__ = max( 40, bpm__);
-            bpm__ = min(240, bpm__);
         }
         else 
         {
@@ -199,7 +185,7 @@ void render_bpm()
 }
 
 // Measure elapsed time in microseconds since the last tick.
-void tock()
+void tick()
 {
     uint32_t now = micros();
     elapsed__ += (now - tick__);
@@ -219,43 +205,6 @@ void render_beat()
 {
     lcd.setCursor(6, 0);
     lcd.print(beat__);
-}
-
-void render_volume_old()
-{
-    // Use the 13 rightmost characters to render the horizontal volume bar.
-    // With every character having 5 colums, we have 65 pixels for the bar.
-    static const double bars_per_unit = (65.0 / 100.0);
-
-    // Use custom characters stored in the LCD character map at this offset.
-    static const uint8_t offset = 0;
-
-    lcd.setCursor(0, 1);
-    lcd.print(BLANK_LINE);
-
-    lcd.setCursor(0, 1);
-    if (volume__ < 10) {
-        lcd.print(' ');
-    }
-    lcd.print(volume__);
-
-    lcd.setCursor(3, 1);
-    double volume = volume__;
-    int bars = floor(volume * bars_per_unit);
-    bars += 1;
-
-    // Render 'full' bars
-    int quot = bars / 5;
-    for (int i = 0; i < quot; ++i) {
-        lcd.write(4);
-    }
-
-    // Render 'partial' bars
-    int mod = bars % 5;
-    if (mod) {
-        uint8_t index = offset + (mod - 1);
-        lcd.write(index);
-    }
 }
 
 void render_volume()
@@ -287,9 +236,8 @@ void render_volume()
         line_buf__[col++] = offset + (modulus - 1);
     }
 
-    //Serial.println(line_buf__);
-
-    dsply.update(1, line_buf__);
+    // Update LCD display
+    dejitter.update(1, line_buf__);
 }
 
 // Used for debugging only
@@ -325,6 +273,7 @@ void isr_encoder()
 // LiquidCrystal_I2C::clear() takes too long. This is should be faster.
 void lcd_clear()
 {
+    static const char* const BLANK_LINE = "                ";
     lcd.setCursor(0, 0);
     lcd.print(BLANK_LINE);
     lcd.setCursor(0, 1);
@@ -335,6 +284,8 @@ void enter_standby_mode()
 {
     lcd.noBacklight();
     lcd.noDisplay();
+
+    edit_mode__ = edit_mode::standby;
 }
 
 void enter_tempo_edit_mode()
@@ -350,6 +301,8 @@ void enter_tempo_edit_mode()
     lcd.write('/');
     lcd.setCursor(8, 0);
     lcd.print(metre__);
+
+    edit_mode__ = edit_mode::tempo;
 }
 
 void enter_metre_edit_mode()
@@ -358,6 +311,8 @@ void enter_metre_edit_mode()
     lcd.setCursor(0, 0);
     lcd.print("Metrum w\x06hlen");
     render_metre();
+
+    edit_mode__ = edit_mode::metre;
 }
 
 void enter_volume_edit_mode()
@@ -365,8 +320,10 @@ void enter_volume_edit_mode()
     lcd_clear();
     lcd.setCursor(0, 0);
     lcd.print("Lautst\x06rke");
-    dsply.clear();
+    dejitter.clear();
     render_volume();
+
+    edit_mode__ = edit_mode::volume;
 }
 
 // Cycles through edit modes.
@@ -374,19 +331,16 @@ void cycle_edit_mode()
 {
     switch (edit_mode__) 
     {
-    case mode_standby:
+    case edit_mode::standby:
         return wakeup();
 
-    case mode_tempo:
-        edit_mode__ = mode_metre;
+    case edit_mode::tempo:
         return enter_metre_edit_mode();
 
-    case mode_metre:
-        edit_mode__ = mode_volume;
+    case edit_mode::metre:
         return enter_volume_edit_mode();
     
-    case mode_volume:
-        edit_mode__ = mode_tempo;
+    case edit_mode::volume:
         return enter_tempo_edit_mode();
     };
 }
@@ -398,10 +352,25 @@ void save_preset()
 
 void wakeup()
 {
-    edit_mode__ = mode_tempo;
+    edit_mode__ = edit_mode::tempo;
     lcd.display();
     lcd.backlight();
     enter_tempo_edit_mode();
+}
+
+void update_bpm()
+{
+    bpm__ = max( 40, bpm__);
+    bpm__ = min(240, bpm__);
+    cycle__ = ((60 * 1000000) / bpm__);
+    render_bpm();
+}
+
+void update_volume()
+{
+    volume__ = max(0, volume__);
+    volume__ = min(99, volume__);
+    render_volume();
 }
 
 //-------------------------------------------------------------------------------------------------
@@ -413,9 +382,8 @@ void setup()
     pinMode(SPEAKER_PIN, OUTPUT);
     digitalWrite(SPEAKER_PIN, LOW);
 
-    edit_mode__ = mode_tempo;
-    tick__ = micros();
-    elapsed__ = 0;
+    beat__ = 1;
+    metre__ = 1;
 
     // TODO: read last bpm choosen from EEPROM.
     // TODO: read last metre from EEPROM.
@@ -447,34 +415,41 @@ void setup()
     pinMode(ENCODER_DT_PIN, INPUT_PULLUP);
     attachInterrupt(digitalPinToInterrupt(ENCODER_CLK_PIN), isr_encoder, FALLING);
 
-    volume__ = 50;
-
     memset(line_buf__, ' ', 16);
 
-    Serial.begin(9600);
+    Serial.begin(38400);
     Serial.println("Running ...");
+
+    tick__ = micros();
+    cycle__ = 0;
+    elapsed__ = 0;
 }
 
 void loop() 
 {
     // Measure time elapsed since last tick
-    tock();
+    tick();
 
     // Update LEDs.
     led_red.update();
     led_green.update();
 
-    // Read rorary encoder.
-    encoder_btn.update();
-    int encoder_moved = read_encoder();
-
     // Detect beat
     if (elapsed__ >= cycle__)
     {
+        uint32_t elapsed = elapsed__;
         uint32_t offset = (elapsed__ - cycle__);
         cycle__ = ((60 * 1000000) / bpm__);
         cycle__ -= offset;
         elapsed__ = 0;
+
+        Serial.print(beat__);
+        Serial.print("\t");
+        Serial.print(elapsed);
+        Serial.print("\t");
+        Serial.print(cycle__);
+        Serial.print("\t");
+        Serial.println(offset);
 
         if (beat__ == 1)
         {
@@ -487,7 +462,7 @@ void loop()
             led_green.flash(50);
         }
 
-        if (edit_mode__ == mode_tempo) {
+        if (edit_mode__ == edit_mode::tempo) {
             render_beat();
         }
 
@@ -496,90 +471,74 @@ void loop()
         }
     }
 
-    // Evaluate SELECT button
-    select_btn.update();
-    fsm.update(select_btn.status());
-    switch (fsm.poll()) 
-    {
-    case EV_BTN_PRESSED_SHORT:
-        cycle_edit_mode();
-        inactive_since__ = tick__;
-        break;
+    // Read rorary encoder.
+    encoder_btn.update();
+    int encoder_moved = read_encoder();
 
-    case EV_BTN_PRESSED_LONG:
-        save_preset();
-        inactive_since__ = tick__;
-        break;
+    // Update the state machine with button and encoder changes
+    fsm.update(encoder_btn.status(), encoder_moved, tick__);
+    auto event = fsm.poll();
 
-    case EV_NOEVENT:
-    default:
-        break;
+    if (event > EV_INACTIVE) {
+        static char buffer[128];
+        sprintf(buffer, "Got event #%d %d\n", event, encoder_moved);
+        Serial.print(buffer);
     }
 
-    // Wakeup from standby?
-    if (edit_mode__ == mode_standby && encoder_moved)
+    // Evaluate event produced by state machine upon user interaction
+    switch (event) 
     {
-        wakeup();
+    case EV_BTN_PRESSED:
+        return cycle_edit_mode();
+
+    case EV_BTN_PRESSED_ALT:
+        return save_preset();
+
+    case EV_INACTIVE: if (edit_mode__ != edit_mode::standby) 
+        return enter_standby_mode();
     }
 
-    // Take actions according to edit mode choosen
+    // Apply encoder movement.
     switch (edit_mode__)
     {
-    case mode_standby:
-        break;
+    case edit_mode::standby: if (event == EV_ENCODER_MOVED)
+        return wakeup();
 
-    case mode_tempo:
-        if (encoder_moved)
+    case edit_mode::tempo:
+        if (event == EV_ENCODER_MOVED)
         {
-            if (encoder_btn.pressed())
-            {
-                bpm__ += encoder_moved;
-                bpm__ = max( 40, bpm__);
-                bpm__ = min(240, bpm__);
-            }
-            else
-            {
-                advance_tempo(encoder_moved);
-            }
-            cycle__ = ((60 * 1000000) / bpm__);
-            render_bpm();
-            inactive_since__ = tick__;
+            advance_tempo(encoder_moved);
+            update_bpm();
+        }
+        else if (event == EV_ENCODER_MOVED_ALT)
+        {
+            bpm__ += encoder_moved;
+            update_bpm();
         }
         break;
     
-    case mode_metre:
-        if (encoder_moved)
+    case edit_mode::metre:
+        if (event == EV_ENCODER_MOVED)
         {
             metre__ += encoder_moved;
             metre__ = max(1, metre__);
             metre__ = min(7, metre__);
             render_metre();
-            inactive_since__ = tick__;
         }
         break;
 
-    case mode_volume:
-        if (encoder_moved)
+    case edit_mode::volume:
+        if (event == EV_ENCODER_MOVED)
         {
-            if (encoder_btn.pressed()) {
-                volume__ += encoder_moved;
-            }
-            else {
-                volume__ = (volume__ / 5) * 5;
-                volume__ += (encoder_moved * 5);
-            }
-            volume__ = max(0, volume__);
-            volume__ = min(99, volume__);
-            render_volume();
-            inactive_since__ = tick__;
+            volume__ = (volume__ / 5) * 5;
+            volume__ += (encoder_moved * 5);
+            update_volume();
+        }
+        else if (event == EV_ENCODER_MOVED_ALT)
+        {
+            volume__ += encoder_moved;
+            update_volume();
         }
         break;
-    }
-
-    // Enter standby mode?
-    if (edit_mode__ != mode_standby && (tick__ - inactive_since__ > STANDBY))
-    {
-        edit_mode__ = mode_standby;
-        enter_standby_mode();
     }
 }

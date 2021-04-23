@@ -14,6 +14,7 @@ void DeJitter::clear()
 
 void DeJitter::update(uint8_t row, char* content)
 {
+    //Serial.println(line_buf__);
     for (int i = 0; i < 16; ++i)
     {
         if (line_[i] != content[i])
