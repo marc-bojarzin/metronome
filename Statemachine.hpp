@@ -3,27 +3,38 @@
 
 #include <Arduino.h>
 
-#define EV_NOEVENT 0
-#define EV_BTN_PRESSED_SHORT 1
-#define EV_BTN_PRESSED_LONG 2
+static const int EV_NOEVENT            =  0;
+static const int EV_INACTIVE           =  1;  // no action for 15 seconds
+static const int EV_BTN_PRESSED        =  2;  // button pressed and released
+static const int EV_BTN_PRESSED_ALT    =  3;  // button pressed and released after 3 seconds
+static const int EV_ENCODER_MOVED      =  4;  // rotary encoder moved
+static const int EV_ENCODER_MOVED_ALT  =  5;  // rotary encoder moved while pressed
 
 class Statemachine
-{    
-    enum {
-        s_released = 0
-      , s_pressed_down
-      , s_pressed_hold
+{
+    // Standby threshold
+    static const uint32_t STANDBY_THD   = (15ul * 1000ul * 1000ul);  // 15 seconds
+    static const uint32_t LONGPRESS_THD = ( 3ul * 1000ul * 1000ul);  //  3 seconds
+
+    enum class state {
+        btn_released = 0
+      , btn_pressed
+      , btn_hold
     } state_;
 
-    unsigned long holding_since_;
-    int last_event_;
+    uint32_t inactive_since_;
+    uint32_t holding_since_;
+    int event_;
 
 public:
+    /// Constructor.
     Statemachine();
-    void update(int);
+
+    /// Updates statemachine with external triggers.
+    void update(int, int, uint32_t);
+
+    /// Returns the last event.
     int poll();
 };
 
-
-
-#endif
+#endif // STATEMACHINE_HPP
