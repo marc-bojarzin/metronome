@@ -4,11 +4,10 @@
 // Sample rate: 8000 samples per second
 // Sample format: 8 bit unsigned
 
-// All waves have same length of 400 sample (50ms)
-static const size_t SAMPLE_LENGTH = 400;
 
 // Strong pulse at 1kHz ("tock")
-static PROGMEM const int8_t PULSE_1000 [ SAMPLE_LENGTH ] = 
+static const size_t PULSE_1000_LENGTH = 400;
+static PROGMEM const int8_t PULSE_1000 [ PULSE_1000_LENGTH ] = 
 {
     -128, -127, -126, -125,  123,  122,  121,  120, -120, -119, -118, -117,  116,  115,  114,  113,
     -113, -112, -111, -110,  109,  108,  107,  106, -106, -105, -105, -104,  102,  101,  101,  100,
@@ -38,7 +37,8 @@ static PROGMEM const int8_t PULSE_1000 [ SAMPLE_LENGTH ] =
 };
 
 // Strong pulse at 2kHz ("tick")
-static PROGMEM const int8_t PULSE_2000 [ SAMPLE_LENGTH ] = 
+static const size_t PULSE_2000_LENGTH = 400;
+static PROGMEM const int8_t PULSE_2000 [ PULSE_2000_LENGTH ] = 
 {
     -128, -127,  125,  124, -124, -123,  121,  120, -120, -119,  117,  116, -116, -116,  114,  113,
     -113, -112,  110,  110, -110, -109,  107,  106, -106, -105,  104,  103, -103, -102,  101,  100,
