@@ -19,7 +19,6 @@
                 "/opt/arduino-1.8.13/hardware/arduino/avr/variants/eightanaloginputs",
                 "/opt/arduino-1.8.13/hardware/arduino/avr/libraries/Wire/src",
                 "/home/marc/Arduino/libraries/LiquidCrystal_I2C",
-                "/home/marc/Arduino/libraries/CircularBuffer",
                 "/opt/arduino-1.8.13/hardware/tools/avr/lib/gcc/avr/7.3.0/include",
                 "/opt/arduino-1.8.13/hardware/tools/avr/lib/gcc/avr/7.3.0/include-fixed",
                 "/opt/arduino-1.8.13/hardware/tools/avr/avr/include"

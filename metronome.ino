@@ -3,31 +3,52 @@
 #include <limits.h>
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
+#include <avr/pgmspace.h>
+#include <avr/interrupt.h>
+#include <avr/io.h>
+#include <limits.h>
 
 #include "Led.hpp"
 #include "Button.hpp"
 #include "Statemachine.hpp"
 #include "CustomChars.hpp"
 #include "DeJitter.hpp"
+#include "RotaryEncoder.hpp"
+#include "samples.hpp"
+
+#define DEBUG_SERIAL
+
+#define _SET(x,y) (x |= (1 << y))                //- bit set/clear macros
+#define _CLR(x,y) (x &= (~(1 << y)))             //  |
+#define _CHK(x,y) (x & (1 << y))                 //  |
+#define _TOG(x,y) (x ^= (1 << y))                //--+ 
 
 //-------------------------------------------------------------------------------------------------
 // Global constants
 
-
 // Rotary encoder pins.
-static const uint8_t ENCODER_CLK_PIN =  2;  // INT0
-static const uint8_t ENCODER_DT_PIN  =  4;
-static const uint8_t ENCODER_BTN_PIN =  5;
+static const uint8_t ENCODER_CLK_PIN   =   2;     // INT0
+static const uint8_t ENCODER_DTA_PIN   =   3;
+static const uint8_t ENCODER_BTN_PIN   =   4;
 
 // LEDs
-static const uint8_t RED_LED_PIN     =  7;
-static const uint8_t GREEN_LED_PIN   =  8;
+static const uint8_t RED_LED_PIN       =  A2;
+static const uint8_t GREEN_LED_PIN     =  A3;
 
-// Speaker
-static const uint8_t SPEAKER_PIN     =  9;
+// Tap tempo button
+static const uint8_t TAPTEMPO_BTN_PIN  =   6;
+
+// PWM Audio output
+static const uint8_t PWM_AUDIO_PIN     =  11;
 
 //-------------------------------------------------------------------------------------------------
 // Global objects
+
+// Waveforms:
+volatile unsigned int sample_offset__  = 0;
+volatile unsigned int waveforms[2];
+volatile unsigned int waveform_lengths[2];
+volatile int          active_waveform;
 
 // Display:
 // Connect to LCD via I2C, default address 0x27 (A0-A2 not jumpered).
@@ -39,12 +60,12 @@ Led led_red(RED_LED_PIN);
 Led led_green(GREEN_LED_PIN);
 
 // Rotary encoder:
-// Wiring: CLK pin connected to INT0 pin with falling edge detection.
-// Hardware debouncing RC filter applied on CLK pin.
-// Assuming that the data pin has enough time to settle, no debouncing is needed.
-// The encoder button is software-debounced.
+RotaryEncoder encoder(ENCODER_CLK_PIN, ENCODER_DTA_PIN);
 Button encoder_btn (ENCODER_BTN_PIN);
-volatile int encoder_moved__ = 0;
+
+// Tap tempo button
+//Button taptempo_btn (TAPTEMPO_BTN_PIN);
+//uint32_t taptempo_last__ = 0;
 
 // Statemachine to react on user input.
 Statemachine fsm = Statemachine();
@@ -53,7 +74,6 @@ enum class edit_mode {
     standby = 0
   , tempo
   , metre
-  , volume
 }   edit_mode__;
 
 
@@ -105,15 +125,56 @@ const tempo tempi__[17] =
   , { "Prestissimo", 202 }
 };
 
-// Volume.
-int volume__;
-
 // Flicker free display line buffers.
 static char line_buf__[16];
 
 //-------------------------------------------------------------------------------------------------
 // Global functions
 
+// Suspend audio interrupt
+void suspend_audio()
+{
+    _CLR(TIMSK1, OCIE1A);
+}
+
+// Resume audio interrupt
+void resume_audio()
+{
+    _SET(TIMSK1, OCIE1A);
+}
+
+// Plays a strong pulse at 2kHz for 50ms  (the "TICK" sound)
+void play_pulse_2000()
+{
+    sample_offset__ = 0;
+    active_waveform = 0;
+}
+
+// Plays a strong pulse at 1kHz for 50ms  (the "TACK" sound)
+void play_pulse_1000()
+{
+    sample_offset__ = 0;
+    active_waveform = 1;
+}
+
+/**
+ * @brief TIMER 1 match compare ISR
+ * Called every 1/8000 s (0.125 ms)
+ */
+SIGNAL(TIMER1_COMPA_vect)
+{
+    register int16_t sample = 0;
+    if (sample_offset__ < waveform_lengths[active_waveform])
+    {
+        sample = pgm_read_byte(waveforms[active_waveform] + sample_offset__);
+        sample += 128;
+        OCR2A = OCR2B = static_cast<uint8_t>(sample);
+        if (++sample_offset__ >= waveform_lengths[active_waveform])
+        {
+            OCR2A = OCR2B = 128;
+        }
+    }
+}
 
 // Fill display line buffer with blanks.
 void clear_line_buffer()
@@ -207,38 +268,7 @@ void render_beat()
     lcd.print(beat__);
 }
 
-void render_volume()
-{
-    // Use the 13 rightmost characters to render the horizontal volume bar.
-    // With every character having 5 colums, we have 65 pixels for the bar.
-    static const double bars_per_unit = (65.0 / 100.0);
 
-    // Use custom characters stored in the LCD character map at this offset.
-    static const uint8_t offset = 0;
-
-    clear_line_buffer();
-    sprintf(line_buf__, "%2d ", volume__);
-    int col = 3;
-
-    double volume = volume__;
-    int bars = floor(volume * bars_per_unit);
-    bars += 1;
-
-    // Render 'full' bars
-    int quot = bars / 5;
-    for (int i = 0; i < quot; ++i) {
-        line_buf__[col++] = 4;
-    }
-
-    // Render 'partial' bars
-    int modulus = bars % 5;
-    if (modulus) {
-        line_buf__[col++] = offset + (modulus - 1);
-    }
-
-    // Update LCD display
-    dejitter.update(1, line_buf__);
-}
 
 // Used for debugging only
 void render_offset(uint32_t offset)
@@ -249,25 +279,10 @@ void render_offset(uint32_t offset)
     lcd.print(offset);
 }
 
-// Detect movement on the rotary encoder
-int read_encoder()
-{
-    int value = 0;
-    if (encoder_moved__)
-    {
-        noInterrupts();
-        value += encoder_moved__;
-        encoder_moved__ &= 0x0;
-        interrupts();
-    }
-    return value;
-}
-
-// Interrupt service routine for the rotary encoder.
-// The interrupt is triggered by the falling edge of the CLK signal.
+// Interrupt service routine for the rotary encoder CLK signal.
 void isr_encoder()
 {
-    encoder_moved__ += (digitalRead(ENCODER_DT_PIN) == HIGH ? 1 : -1);
+    encoder.on_clk_change();
 }
 
 // LiquidCrystal_I2C::clear() takes too long. This is should be faster.
@@ -315,17 +330,6 @@ void enter_metre_edit_mode()
     edit_mode__ = edit_mode::metre;
 }
 
-void enter_volume_edit_mode()
-{
-    lcd_clear();
-    lcd.setCursor(0, 0);
-    lcd.print("Lautst\x06rke");
-    dejitter.clear();
-    render_volume();
-
-    edit_mode__ = edit_mode::volume;
-}
-
 // Cycles through edit modes.
 void cycle_edit_mode()
 {
@@ -338,9 +342,6 @@ void cycle_edit_mode()
         return enter_metre_edit_mode();
 
     case edit_mode::metre:
-        return enter_volume_edit_mode();
-    
-    case edit_mode::volume:
         return enter_tempo_edit_mode();
     };
 }
@@ -366,11 +367,41 @@ void update_bpm()
     render_bpm();
 }
 
-void update_volume()
+//-------------------------------------------------------------------------------------------------
+// Custom setup functions
+
+/**
+ * @brief Set TIMER1 interrupt to 8kHz.
+ * ISR copies one sample every 1/8000 seconds to the PWM OCR.
+ */
+void setup_timer()
 {
-    volume__ = max(0, volume__);
-    volume__ = min(99, volume__);
-    render_volume();
+    cli();                                       // disable interrupts
+    TCCR1A = 0x0;                                // clear TCCR1A register
+    TCCR1B = 0x0;                                // clear TCCR1B register
+    TCNT1  = 0x0;                                // initialize counter value
+    OCR1A = 1999;                                // 16000000 / (1 * 8000) - 1
+    _SET(TCCR1B, WGM12);                         // turn on CTC mode
+    _SET(TCCR1B, CS10);                          // no prescaling
+    _CLR(TIMSK1, OCIE1A);                        // disable audio interrupt
+    sei();                                       // allow interrupts
+}
+
+/**
+ * @brief Enable Fast PWM on TIMER2
+ * Sets 8-bit fast PWM on TIMER2 at 16000000/256 = 62.5 kHz
+ */
+void setup_pwm()
+{
+    TCCR2A = 0x0;                                // clear TCCR2A register
+    TCCR2B = 0x0;                                // clear TCCR2B register
+    _SET(TCCR2A, WGM21);                         // Fast PWM non-inverting mode
+    _SET(TCCR2A, WGM20);                         // |
+    _SET(TCCR2A, COM2A1);                        //-+
+    _SET(TCCR2B, CS20);                          // no prescaling
+    OCR2A = OCR2B = 128;                         // initial DC level ~2.5v
+    DDRB = 0x0;
+    _SET(DDRB, 3);                               // PWM pin (11)
 }
 
 //-------------------------------------------------------------------------------------------------
@@ -378,28 +409,30 @@ void update_volume()
 
 void setup() 
 {
-    // Pull audio pin to ground.
-    pinMode(SPEAKER_PIN, OUTPUT);
-    digitalWrite(SPEAKER_PIN, LOW);
+    // Waveforms
+    waveforms[0] = reinterpret_cast<unsigned int>(PULSE_2000);
+    waveforms[1] = reinterpret_cast<unsigned int>(PULSE_1000);
+    waveform_lengths[0] = PULSE_2000_LENGTH;
+    waveform_lengths[1] = PULSE_1000_LENGTH;
+    active_waveform     = 0;
+    sample_offset__     = UINT_MAX;
+
+    // Audio output PWM and audio sample ISR.
+    setup_pwm();
+    setup_timer();
+    suspend_audio();
 
     beat__ = 1;
     metre__ = 1;
 
     // TODO: read last bpm choosen from EEPROM.
     // TODO: read last metre from EEPROM.
-    // TODO: read last volume setting from EEPROM.
-
+    
     bpm__ = 104;
     tempo_name__ = nullptr;
-    volume__ = 50;
 
     // Initialize display.
     lcd.init();
-    lcd.createChar(0, bar_1);
-    lcd.createChar(1, bar_2);
-    lcd.createChar(2, bar_3);
-    lcd.createChar(3, bar_4);
-    lcd.createChar(4, bar_5);
     lcd.createChar(5, note_character);
     lcd.createChar(6, a_uml);
     lcd.backlight();
@@ -410,19 +443,22 @@ void setup()
     led_red.off();
     led_green.off();
 
-    // Setup rotary encoder.
-    pinMode(ENCODER_CLK_PIN, INPUT_PULLUP);
-    pinMode(ENCODER_DT_PIN, INPUT_PULLUP);
-    attachInterrupt(digitalPinToInterrupt(ENCODER_CLK_PIN), isr_encoder, FALLING);
+    // Setup rotary encoder CLK interrupt
+    attachInterrupt(digitalPinToInterrupt(ENCODER_CLK_PIN), isr_encoder, CHANGE);
 
     memset(line_buf__, ' ', 16);
 
-    Serial.begin(38400);
+#ifdef DEBUG_SERIAL
+    Serial.begin(115200);
     Serial.println("Running ...");
+#endif
 
     tick__ = micros();
     cycle__ = 0;
     elapsed__ = 0;
+
+    resume_audio();
+    encoder.reset();
 }
 
 void loop() 
@@ -443,6 +479,7 @@ void loop()
         cycle__ -= offset;
         elapsed__ = 0;
 
+#ifdef DEBUG_SERIAL
         Serial.print(beat__);
         Serial.print("\t");
         Serial.print(elapsed);
@@ -450,15 +487,16 @@ void loop()
         Serial.print(cycle__);
         Serial.print("\t");
         Serial.println(offset);
+#endif
 
         if (beat__ == 1)
         {
-            tone(SPEAKER_PIN, 1000, 20);
+            play_pulse_2000();
             led_red.flash(50);
         }
         else 
         {
-            tone(SPEAKER_PIN, 500, 20);
+            play_pulse_1000();
             led_green.flash(50);
         }
 
@@ -473,17 +511,19 @@ void loop()
 
     // Read rorary encoder.
     encoder_btn.update();
-    int encoder_moved = read_encoder();
+    int encoder_moved = encoder.moved();
 
     // Update the state machine with button and encoder changes
     fsm.update(encoder_btn.status(), encoder_moved, tick__);
     auto event = fsm.poll();
 
+#ifdef DEBUG_SERIAL
     if (event > EV_INACTIVE) {
         static char buffer[128];
         sprintf(buffer, "Got event #%d %d\n", event, encoder_moved);
         Serial.print(buffer);
     }
+#endif
 
     // Evaluate event produced by state machine upon user interaction
     switch (event) 
@@ -501,8 +541,11 @@ void loop()
     // Apply encoder movement.
     switch (edit_mode__)
     {
-    case edit_mode::standby: if (event == EV_ENCODER_MOVED)
-        return wakeup();
+    case edit_mode::standby: 
+        if (event == EV_ENCODER_MOVED)
+        {
+            return wakeup();
+        }
 
     case edit_mode::tempo:
         if (event == EV_ENCODER_MOVED)
@@ -524,20 +567,6 @@ void loop()
             metre__ = max(1, metre__);
             metre__ = min(7, metre__);
             render_metre();
-        }
-        break;
-
-    case edit_mode::volume:
-        if (event == EV_ENCODER_MOVED)
-        {
-            volume__ = (volume__ / 5) * 5;
-            volume__ += (encoder_moved * 5);
-            update_volume();
-        }
-        else if (event == EV_ENCODER_MOVED_ALT)
-        {
-            volume__ += encoder_moved;
-            update_volume();
         }
         break;
     }
