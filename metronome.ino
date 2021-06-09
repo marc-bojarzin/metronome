@@ -13,6 +13,7 @@
 #include "Statemachine.hpp"
 #include "CustomChars.hpp"
 #include "DeJitter.hpp"
+#include "RotaryEncoder.hpp"
 #include "samples.hpp"
 
 #define DEBUG_SERIAL
@@ -26,16 +27,16 @@
 // Global constants
 
 // Rotary encoder pins.
-static const uint8_t ENCODER_CLK_PIN   =  2;     // INT0
-static const uint8_t ENCODER_DT_PIN    =  4;
-static const uint8_t ENCODER_BTN_PIN   =  5;
+static const uint8_t ENCODER_CLK_PIN   =   2;     // INT0
+static const uint8_t ENCODER_DTA_PIN   =   3;
+static const uint8_t ENCODER_BTN_PIN   =   4;
 
 // LEDs
-static const uint8_t RED_LED_PIN       =  7;
-static const uint8_t GREEN_LED_PIN     =  8;
+static const uint8_t RED_LED_PIN       =  A2;
+static const uint8_t GREEN_LED_PIN     =  A3;
 
 // Tap tempo button
-static const uint8_t TAPTEMPO_BTN_PIN  =  9;
+static const uint8_t TAPTEMPO_BTN_PIN  =   6;
 
 // PWM Audio output
 static const uint8_t PWM_AUDIO_PIN     =  11;
@@ -59,16 +60,12 @@ Led led_red(RED_LED_PIN);
 Led led_green(GREEN_LED_PIN);
 
 // Rotary encoder:
-// Wiring: CLK pin connected to INT0 pin with falling edge detection.
-// Hardware debouncing RC filter applied on CLK pin.
-// Assuming that the data pin has enough time to settle, no debouncing is needed.
-// The encoder button is software-debounced.
+RotaryEncoder encoder(ENCODER_CLK_PIN, ENCODER_DTA_PIN);
 Button encoder_btn (ENCODER_BTN_PIN);
-volatile int encoder_moved__ = 0;
 
 // Tap tempo button
-Button taptempo_btn (TAPTEMPO_BTN_PIN);
-uint32_t taptempo_last__ = 0;
+//Button taptempo_btn (TAPTEMPO_BTN_PIN);
+//uint32_t taptempo_last__ = 0;
 
 // Statemachine to react on user input.
 Statemachine fsm = Statemachine();
@@ -282,23 +279,10 @@ void render_offset(uint32_t offset)
     lcd.print(offset);
 }
 
-// Detect movement on the rotary encoder
-int read_encoder()
-{
-    int value = 0;
-    if (encoder_moved__)
-    {
-        value += encoder_moved__;
-        encoder_moved__ &= 0x0;
-    }
-    return value;
-}
-
-// Interrupt service routine for the rotary encoder.
-// The interrupt is triggered by the falling edge of the CLK signal.
+// Interrupt service routine for the rotary encoder CLK signal.
 void isr_encoder()
 {
-    encoder_moved__ += (digitalRead(ENCODER_DT_PIN) == HIGH ? 1 : -1);
+    encoder.on_clk_change();
 }
 
 // LiquidCrystal_I2C::clear() takes too long. This is should be faster.
@@ -416,6 +400,7 @@ void setup_pwm()
     _SET(TCCR2A, COM2A1);                        //-+
     _SET(TCCR2B, CS20);                          // no prescaling
     OCR2A = OCR2B = 128;                         // initial DC level ~2.5v
+    DDRB = 0x0;
     _SET(DDRB, 3);                               // PWM pin (11)
 }
 
@@ -458,15 +443,13 @@ void setup()
     led_red.off();
     led_green.off();
 
-    // Setup rotary encoder.
-    pinMode(ENCODER_CLK_PIN, INPUT_PULLUP);
-    pinMode(ENCODER_DT_PIN, INPUT_PULLUP);
-    attachInterrupt(digitalPinToInterrupt(ENCODER_CLK_PIN), isr_encoder, FALLING);
+    // Setup rotary encoder CLK interrupt
+    attachInterrupt(digitalPinToInterrupt(ENCODER_CLK_PIN), isr_encoder, CHANGE);
 
     memset(line_buf__, ' ', 16);
 
 #ifdef DEBUG_SERIAL
-    Serial.begin(9600);
+    Serial.begin(115200);
     Serial.println("Running ...");
 #endif
 
@@ -475,6 +458,7 @@ void setup()
     elapsed__ = 0;
 
     resume_audio();
+    encoder.reset();
 }
 
 void loop() 
@@ -527,7 +511,7 @@ void loop()
 
     // Read rorary encoder.
     encoder_btn.update();
-    int encoder_moved = read_encoder();
+    int encoder_moved = encoder.moved();
 
     // Update the state machine with button and encoder changes
     fsm.update(encoder_btn.status(), encoder_moved, tick__);
