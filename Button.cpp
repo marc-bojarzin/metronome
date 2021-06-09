@@ -2,11 +2,11 @@
 
 Button::Button(byte pin)
     : pin_(pin)
-    , stable_state_(HIGH)
-    , last_state_(HIGH)
+    , stable_state_(LOW)
+    , last_state_(LOW)
     , last_debounce_time_(millis())
 {
-    pinMode(pin_, INPUT_PULLUP);
+    pinMode(pin_, INPUT);
 }    
 
 byte Button::pin() const
@@ -42,15 +42,15 @@ void Button::update()
 
 byte Button::status() const
 {
-    return !stable_state_;
+    return stable_state_;
 }
 
 bool Button::pressed() const
 {
-    return (stable_state_ == LOW);
+    return (stable_state_ == HIGH);
 }
 
 bool Button::released() const
 {
-    return (stable_state_ == HIGH);
+    return (stable_state_ == LOW);
 }
