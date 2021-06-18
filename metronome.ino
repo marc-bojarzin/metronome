@@ -16,7 +16,7 @@
 #include "RotaryEncoder.hpp"
 #include "samples.hpp"
 
-#define DEBUG_SERIAL
+#undef DEBUG_SERIAL
 
 #define _SET(x,y) (x |= (1 << y))                //- bit set/clear macros
 #define _CLR(x,y) (x &= (~(1 << y)))             //  |
@@ -26,20 +26,20 @@
 //-------------------------------------------------------------------------------------------------
 // Global constants
 
+// Tap tempo button
+constexpr uint8_t TAPTEMPO_BTN_PIN  =   2;     // INT1
+
 // Rotary encoder pins.
-static const uint8_t ENCODER_CLK_PIN   =   2;     // INT0
-static const uint8_t ENCODER_DTA_PIN   =   3;
-static const uint8_t ENCODER_BTN_PIN   =   4;
+constexpr uint8_t ENCODER_CLK_PIN   =   3;     // INT2
+constexpr uint8_t ENCODER_DTA_PIN   =   4;
+constexpr uint8_t ENCODER_BTN_PIN   =   5;
 
 // LEDs
-static const uint8_t RED_LED_PIN       =  A2;
-static const uint8_t GREEN_LED_PIN     =  A3;
-
-// Tap tempo button
-static const uint8_t TAPTEMPO_BTN_PIN  =   6;
+constexpr uint8_t RED_LED_PIN       =  A2;
+constexpr uint8_t GREEN_LED_PIN     =  A3;
 
 // PWM Audio output
-static const uint8_t PWM_AUDIO_PIN     =  11;
+constexpr uint8_t PWM_AUDIO_PIN     =  11;
 
 //-------------------------------------------------------------------------------------------------
 // Global objects
@@ -230,18 +230,21 @@ void advance_tempo(int steps)
 
 void render_bpm()
 {
-    lcd.setCursor(2, 0);
-    lcd.print("   ");
-    lcd.setCursor(2, 0);
-    lcd.print(bpm__);
-
-    lcd.setCursor(0, 1);
-    auto wrk = get_tempo_name(bpm__);
-    if (wrk != tempo_name__)
+    if (edit_mode__ == edit_mode::tempo) 
     {
-        tempo_name__ = wrk;
+        lcd.setCursor(2, 0);
+        lcd.print("   ");
+        lcd.setCursor(2, 0);
+        lcd.print(bpm__);
+
         lcd.setCursor(0, 1);
-        lcd.print(tempo_name__);
+        auto wrk = get_tempo_name(bpm__);
+        if (wrk != tempo_name__)
+        {
+            tempo_name__ = wrk;
+            lcd.setCursor(0, 1);
+            lcd.print(tempo_name__);
+        }
     }
 }
 
@@ -264,11 +267,12 @@ void render_metre()
 
 void render_beat()
 {
-    lcd.setCursor(6, 0);
-    lcd.print(beat__);
+    if (edit_mode__ == edit_mode::tempo)
+    {
+        lcd.setCursor(6, 0);
+        lcd.print(beat__);
+    }
 }
-
-
 
 // Used for debugging only
 void render_offset(uint32_t offset)
@@ -297,14 +301,16 @@ void lcd_clear()
 
 void enter_standby_mode()
 {
+    edit_mode__ = edit_mode::standby;
+
     lcd.noBacklight();
     lcd.noDisplay();
-
-    edit_mode__ = edit_mode::standby;
 }
 
 void enter_tempo_edit_mode()
 {
+    edit_mode__ = edit_mode::tempo;
+
     lcd_clear();
     lcd.setCursor(0, 0); lcd.print("\x05=");
     tempo_name__ = nullptr;
@@ -316,18 +322,16 @@ void enter_tempo_edit_mode()
     lcd.write('/');
     lcd.setCursor(8, 0);
     lcd.print(metre__);
-
-    edit_mode__ = edit_mode::tempo;
 }
 
 void enter_metre_edit_mode()
 {
+    edit_mode__ = edit_mode::metre;
+
     lcd_clear();
     lcd.setCursor(0, 0);
     lcd.print("Metrum w\x06hlen");
     render_metre();
-
-    edit_mode__ = edit_mode::metre;
 }
 
 // Cycles through edit modes.
@@ -489,33 +493,32 @@ void loop()
         Serial.println(offset);
 #endif
 
-        if (beat__ == 1)
+        if (metre__ > 1 && beat__ == 1)
         {
             play_pulse_2000();
+            led_green.flash(50);
             led_red.flash(50);
         }
         else 
         {
             play_pulse_1000();
-            led_green.flash(50);
+            led_red.flash(50);
         }
 
-        if (edit_mode__ == edit_mode::tempo) {
-            render_beat();
-        }
+        render_beat();
 
         if (++beat__ > metre__) {
             beat__ = 1;
         }
     }
 
-    // Read rorary encoder.
+    // Read rotrary encoder.
     encoder_btn.update();
     int encoder_moved = encoder.moved();
 
     // Update the state machine with button and encoder changes
     fsm.update(encoder_btn.status(), encoder_moved, tick__);
-    auto event = fsm.poll();
+    auto event = fsm.event();
 
 #ifdef DEBUG_SERIAL
     if (event > EV_INACTIVE) {
@@ -534,7 +537,7 @@ void loop()
     case EV_BTN_PRESSED_ALT:
         return save_preset();
 
-    case EV_INACTIVE: if (edit_mode__ != edit_mode::standby) 
+    case EV_INACTIVE: if (edit_mode__ != edit_mode::standby)
         return enter_standby_mode();
     }
 
