@@ -66,7 +66,7 @@ void Statemachine::update(int encoder_btn, int encoder_moved, uint32_t tick)
     }
 }
 
-int Statemachine::poll()
+int Statemachine::event()
 {
     auto wrk = event_;
     event_ = EV_NOEVENT;

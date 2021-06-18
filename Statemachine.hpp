@@ -34,7 +34,7 @@ public:
     void update(int, int, uint32_t);
 
     /// Returns the last event.
-    int poll();
+    int event();
 };
 
 #endif // STATEMACHINE_HPP
