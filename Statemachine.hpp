@@ -13,7 +13,7 @@ static const int EV_ENCODER_MOVED_ALT  =  5;  // rotary encoder moved while pres
 class Statemachine
 {
     // Standby threshold
-    static const uint32_t STANDBY_THD   = (15ul * 1000ul * 1000ul);  // 15 seconds
+    static const uint32_t STANDBY_THD   = (60ul * 1000ul * 1000ul);  // 60 seconds
     static const uint32_t LONGPRESS_THD = ( 3ul * 1000ul * 1000ul);  //  3 seconds
 
     enum class state {
@@ -31,10 +31,10 @@ public:
     Statemachine();
 
     /// Updates statemachine with external triggers.
-    void update(int, int, uint32_t);
+    void update(int, int, uint32_t, uint32_t);
 
     /// Returns the last event.
-    int poll();
+    int event();
 };
 
 #endif // STATEMACHINE_HPP

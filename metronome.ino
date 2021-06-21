@@ -14,32 +14,28 @@
 #include "CustomChars.hpp"
 #include "DeJitter.hpp"
 #include "RotaryEncoder.hpp"
+#include "TapTempo.hpp"
 #include "samples.hpp"
 
-#define DEBUG_SERIAL
-
-#define _SET(x,y) (x |= (1 << y))                //- bit set/clear macros
-#define _CLR(x,y) (x &= (~(1 << y)))             //  |
-#define _CHK(x,y) (x & (1 << y))                 //  |
-#define _TOG(x,y) (x ^= (1 << y))                //--+ 
+#undef DEBUG_SERIAL
 
 //-------------------------------------------------------------------------------------------------
 // Global constants
 
+// Tap tempo button
+constexpr uint8_t TAPTEMPO_BTN_PIN  =   2;     // INT1
+
 // Rotary encoder pins.
-static const uint8_t ENCODER_CLK_PIN   =   2;     // INT0
-static const uint8_t ENCODER_DTA_PIN   =   3;
-static const uint8_t ENCODER_BTN_PIN   =   4;
+constexpr uint8_t ENCODER_CLK_PIN   =   3;     // INT2
+constexpr uint8_t ENCODER_DTA_PIN   =   4;
+constexpr uint8_t ENCODER_BTN_PIN   =   5;
 
 // LEDs
-static const uint8_t RED_LED_PIN       =  A2;
-static const uint8_t GREEN_LED_PIN     =  A3;
-
-// Tap tempo button
-static const uint8_t TAPTEMPO_BTN_PIN  =   6;
+constexpr uint8_t RED_LED_PIN       =  A2;
+constexpr uint8_t GREEN_LED_PIN     =  A3;
 
 // PWM Audio output
-static const uint8_t PWM_AUDIO_PIN     =  11;
+constexpr uint8_t PWM_AUDIO_PIN     =  11;
 
 //-------------------------------------------------------------------------------------------------
 // Global objects
@@ -64,14 +60,13 @@ RotaryEncoder encoder(ENCODER_CLK_PIN, ENCODER_DTA_PIN);
 Button encoder_btn (ENCODER_BTN_PIN);
 
 // Tap tempo button
-//Button taptempo_btn (TAPTEMPO_BTN_PIN);
-//uint32_t taptempo_last__ = 0;
+TapTempo taptempo (TAPTEMPO_BTN_PIN);
 
 // Statemachine to react on user input.
 Statemachine fsm = Statemachine();
 
 enum class edit_mode {
-    standby = 0
+    low_power = 0
   , tempo
   , metre
 }   edit_mode__;
@@ -81,7 +76,7 @@ enum class edit_mode {
 uint32_t tick__ = 0;
 
 // Beats per minute.
-unsigned bpm__ = 104;
+uint32_t bpm__ = 104;
 
 // Metre n/4, where n can be of [1,2,3,4,5,6,7]
 int metre__ = 1;
@@ -134,13 +129,13 @@ static char line_buf__[16];
 // Suspend audio interrupt
 void suspend_audio()
 {
-    _CLR(TIMSK1, OCIE1A);
+    TIMSK1 &= (~(1 << OCIE1A));
 }
 
 // Resume audio interrupt
 void resume_audio()
 {
-    _SET(TIMSK1, OCIE1A);
+    TIMSK1 |= (1 << OCIE1A);
 }
 
 // Plays a strong pulse at 2kHz for 50ms  (the "TICK" sound)
@@ -230,18 +225,21 @@ void advance_tempo(int steps)
 
 void render_bpm()
 {
-    lcd.setCursor(2, 0);
-    lcd.print("   ");
-    lcd.setCursor(2, 0);
-    lcd.print(bpm__);
-
-    lcd.setCursor(0, 1);
-    auto wrk = get_tempo_name(bpm__);
-    if (wrk != tempo_name__)
+    if (edit_mode__ == edit_mode::tempo) 
     {
-        tempo_name__ = wrk;
+        lcd.setCursor(2, 0);
+        lcd.print("   ");
+        lcd.setCursor(2, 0);
+        lcd.print(bpm__);
+
         lcd.setCursor(0, 1);
-        lcd.print(tempo_name__);
+        auto wrk = get_tempo_name(bpm__);
+        if (wrk != tempo_name__)
+        {
+            tempo_name__ = wrk;
+            lcd.setCursor(0, 1);
+            lcd.print(tempo_name__);
+        }
     }
 }
 
@@ -264,11 +262,12 @@ void render_metre()
 
 void render_beat()
 {
-    lcd.setCursor(6, 0);
-    lcd.print(beat__);
+    if (edit_mode__ == edit_mode::tempo)
+    {
+        lcd.setCursor(6, 0);
+        lcd.print(beat__);
+    }
 }
-
-
 
 // Used for debugging only
 void render_offset(uint32_t offset)
@@ -285,6 +284,12 @@ void isr_encoder()
     encoder.on_clk_change();
 }
 
+// Interrupt service routine for the rotary encoder CLK signal.
+void isr_taptempo()
+{
+    taptempo.trigger();
+}
+
 // LiquidCrystal_I2C::clear() takes too long. This is should be faster.
 void lcd_clear()
 {
@@ -295,16 +300,18 @@ void lcd_clear()
     lcd.print(BLANK_LINE);
 }
 
-void enter_standby_mode()
+void enter_low_power_mode()
 {
+    edit_mode__ = edit_mode::low_power;
+
     lcd.noBacklight();
     lcd.noDisplay();
-
-    edit_mode__ = edit_mode::standby;
 }
 
 void enter_tempo_edit_mode()
 {
+    edit_mode__ = edit_mode::tempo;
+
     lcd_clear();
     lcd.setCursor(0, 0); lcd.print("\x05=");
     tempo_name__ = nullptr;
@@ -316,18 +323,16 @@ void enter_tempo_edit_mode()
     lcd.write('/');
     lcd.setCursor(8, 0);
     lcd.print(metre__);
-
-    edit_mode__ = edit_mode::tempo;
 }
 
 void enter_metre_edit_mode()
 {
+    edit_mode__ = edit_mode::metre;
+
     lcd_clear();
     lcd.setCursor(0, 0);
     lcd.print("Metrum w\x06hlen");
     render_metre();
-
-    edit_mode__ = edit_mode::metre;
 }
 
 // Cycles through edit modes.
@@ -335,7 +340,7 @@ void cycle_edit_mode()
 {
     switch (edit_mode__) 
     {
-    case edit_mode::standby:
+    case edit_mode::low_power:
         return wakeup();
 
     case edit_mode::tempo:
@@ -377,13 +382,13 @@ void update_bpm()
 void setup_timer()
 {
     cli();                                       // disable interrupts
-    TCCR1A = 0x0;                                // clear TCCR1A register
-    TCCR1B = 0x0;                                // clear TCCR1B register
-    TCNT1  = 0x0;                                // initialize counter value
-    OCR1A = 1999;                                // 16000000 / (1 * 8000) - 1
-    _SET(TCCR1B, WGM12);                         // turn on CTC mode
-    _SET(TCCR1B, CS10);                          // no prescaling
-    _CLR(TIMSK1, OCIE1A);                        // disable audio interrupt
+    TCCR1A  =  0x0;                              // clear TCCR1A register
+    TCCR1B  =  0x0;                              // clear TCCR1B register
+    TCNT1   =  0x0;                              // initialize counter value
+    OCR1A   = 1999;                              // 16000000 / (1 * 8000) - 1
+    TCCR1B |= (1 << WGM12);                      // turn on CTC mode
+    TCCR1B |= (1 << CS10);                       // no prescaling
+    TIMSK1 &= (~(1 << TIMSK1));                  // disable audio interrupt
     sei();                                       // allow interrupts
 }
 
@@ -393,15 +398,16 @@ void setup_timer()
  */
 void setup_pwm()
 {
-    TCCR2A = 0x0;                                // clear TCCR2A register
-    TCCR2B = 0x0;                                // clear TCCR2B register
-    _SET(TCCR2A, WGM21);                         // Fast PWM non-inverting mode
-    _SET(TCCR2A, WGM20);                         // |
-    _SET(TCCR2A, COM2A1);                        //-+
-    _SET(TCCR2B, CS20);                          // no prescaling
-    OCR2A = OCR2B = 128;                         // initial DC level ~2.5v
-    DDRB = 0x0;
-    _SET(DDRB, 3);                               // PWM pin (11)
+    TCCR2A  = 0x0;                               // clear TCCR2A register
+    TCCR2B  = 0x0;                               // clear TCCR2B register
+    TCCR2A |= (1 << WGM21);                      // Fast PWM non-inverting mode
+    TCCR2A |= (1 << WGM20);                      // |
+    TCCR2A |= (1 << COM2A1);                     //-+
+    TCCR2B |= (1 << CS20);                       // no prescaling
+    OCR2A   = 128;                               // initial DC level ~2.5v
+    OCR2B   = 128;                               //-+
+    DDRB    = 0x0;                               // clear DDRB register
+    DDRB   |= (1 << 3);                          // PWM pin (11)
 }
 
 //-------------------------------------------------------------------------------------------------
@@ -443,8 +449,11 @@ void setup()
     led_red.off();
     led_green.off();
 
-    // Setup rotary encoder CLK interrupt
+    // Rotary encoder CLK interrupt
     attachInterrupt(digitalPinToInterrupt(ENCODER_CLK_PIN), isr_encoder, CHANGE);
+
+    // Tap-tempo button interrupt
+    attachInterrupt(digitalPinToInterrupt(TAPTEMPO_BTN_PIN), isr_taptempo, RISING);
 
     memset(line_buf__, ' ', 16);
 
@@ -459,6 +468,7 @@ void setup()
 
     resume_audio();
     encoder.reset();
+    taptempo.reset();
 }
 
 void loop() 
@@ -480,47 +490,66 @@ void loop()
         elapsed__ = 0;
 
 #ifdef DEBUG_SERIAL
-        Serial.print(beat__);
-        Serial.print("\t");
-        Serial.print(elapsed);
-        Serial.print("\t");
-        Serial.print(cycle__);
-        Serial.print("\t");
-        Serial.println(offset);
+        // Serial.print(beat__);
+        // Serial.print("\t");
+        // Serial.print(elapsed);
+        // Serial.print("\t");
+        // Serial.print(cycle__);
+        // Serial.print("\t");
+        // Serial.println(offset);
 #endif
 
-        if (beat__ == 1)
+        if (metre__ > 1 && beat__ == 1)
         {
             play_pulse_2000();
+            led_green.flash(50);
             led_red.flash(50);
         }
         else 
         {
             play_pulse_1000();
-            led_green.flash(50);
+            led_red.flash(50);
         }
 
-        if (edit_mode__ == edit_mode::tempo) {
-            render_beat();
-        }
+        render_beat();
 
         if (++beat__ > metre__) {
             beat__ = 1;
         }
     }
 
-    // Read rorary encoder.
+    // Read tap tempo
+    taptempo.update();
+    auto tapped_bpm = taptempo.bpm();
+
+    if (tapped_bpm > 0 && tapped_bpm != bpm__)
+    {
+#ifdef DEBUG_SERIAL
+        Serial.print("got tapped bpm:");
+        Serial.println(tapped_bpm);
+#endif
+        bpm__ = tapped_bpm;
+        if (edit_mode__ == edit_mode::low_power) {
+            wakeup();
+        }
+        else if (edit_mode__ == edit_mode::metre) {
+            enter_tempo_edit_mode();
+        }
+        update_bpm();
+    }
+
+    // Read rotrary encoder.
     encoder_btn.update();
     int encoder_moved = encoder.moved();
 
     // Update the state machine with button and encoder changes
-    fsm.update(encoder_btn.status(), encoder_moved, tick__);
-    auto event = fsm.poll();
+    fsm.update(encoder_btn.status(), encoder_moved, tapped_bpm, tick__);
+    auto event = fsm.event();
 
 #ifdef DEBUG_SERIAL
     if (event > EV_INACTIVE) {
         static char buffer[128];
-        sprintf(buffer, "Got event #%d %d\n", event, encoder_moved);
+        sprintf(buffer, "got event #%d %d\n", event, encoder_moved);
         Serial.print(buffer);
     }
 #endif
@@ -534,14 +563,14 @@ void loop()
     case EV_BTN_PRESSED_ALT:
         return save_preset();
 
-    case EV_INACTIVE: if (edit_mode__ != edit_mode::standby) 
-        return enter_standby_mode();
+    case EV_INACTIVE: if (edit_mode__ != edit_mode::low_power)
+        return enter_low_power_mode();
     }
 
     // Apply encoder movement.
     switch (edit_mode__)
     {
-    case edit_mode::standby: 
+    case edit_mode::low_power: 
         if (event == EV_ENCODER_MOVED)
         {
             return wakeup();

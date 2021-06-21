@@ -9,9 +9,16 @@ Statemachine::Statemachine()
     inactive_since_ = micros();
 }
 
-void Statemachine::update(int encoder_btn, int encoder_moved, uint32_t tick)
+void Statemachine::update(int encoder_btn, 
+                          int encoder_moved, 
+                          uint32_t tapped_bpm, 
+                          uint32_t tick)
 {
     if (encoder_moved) {
+        inactive_since_ = tick;
+    }
+
+    if (tapped_bpm) {
         inactive_since_ = tick;
     }
 
@@ -66,7 +73,7 @@ void Statemachine::update(int encoder_btn, int encoder_moved, uint32_t tick)
     }
 }
 
-int Statemachine::poll()
+int Statemachine::event()
 {
     auto wrk = event_;
     event_ = EV_NOEVENT;
