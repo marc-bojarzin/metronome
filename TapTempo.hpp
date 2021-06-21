@@ -5,6 +5,13 @@
 
 class TapTempo
 {
+    enum class state : uint8_t {
+        released = 0
+      , triggered
+      , high
+      , wait_low
+    };
+
     static constexpr size_t NUM_TAPS = 4;
 
     static constexpr uint32_t debounce_time     =    5;  //   5  ms
@@ -14,22 +21,27 @@ class TapTempo
     // Pin number of push button (with pull down resistor)
     uint8_t pin_;
 
-    // System time of last regular tap recorded.
-    uint32_t last_tap_;
+    // Internal state.
+    volatile state state_;
 
-    // Duration between the last 4 taps.
-    uint32_t taps_[NUM_TAPS];
+    // Timestamps of the last 2 taps detected.
+    volatile uint32_t taps_[2];
 
-    // Index into the taps_ array.
-    size_t   index_;
+    // Timestamp of last change on pin.
+    uint32_t tap_debounce_;
+
+    // Last valid BPM.
+    uint32_t bpm_;
 
 public:
     TapTempo(uint8_t pin);
+    void reset();
     void trigger();
     void update();
+    uint32_t bpm();
 
 private:
-    void reset_taps();
+    void __on_tap();
 };
 
 #endif // TAP_TEMPO_HPP
